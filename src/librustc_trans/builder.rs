@@ -15,12 +15,12 @@ use llvm::{AtomicRmwBinOp, AtomicOrdering, SynchronizationScope, AsmDialect};
 use llvm::{Opcode, IntPredicate, RealPredicate, False, OperandBundleDef};
 use llvm::{ValueRef, BasicBlockRef, BuilderRef, ModuleRef};
 use common::*;
-use machine::llalign_of_pref;
 use type_::Type;
 use value::Value;
 use libc::{c_uint, c_char};
 use rustc::ty::TyCtxt;
-use rustc::session::Session;
+use rustc::ty::layout::{Align, Size};
+use rustc::session::{config, Session};
 
 use std::borrow::Cow;
 use std::ffi::CString;
@@ -480,7 +480,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
-    pub fn alloca(&self, ty: Type, name: &str, align: Option<u32>) -> ValueRef {
+    pub fn alloca(&self, ty: Type, name: &str, align: Option<Align>) -> ValueRef {
         let builder = Builder::with_ccx(self.ccx);
         builder.position_at_start(unsafe {
             llvm::LLVMGetFirstBasicBlock(self.llfn())
@@ -488,7 +488,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         builder.dynamic_alloca(ty, name, align)
     }
 
-    pub fn dynamic_alloca(&self, ty: Type, name: &str, align: Option<u32>) -> ValueRef {
+    pub fn dynamic_alloca(&self, ty: Type, name: &str, align: Option<Align>) -> ValueRef {
         self.count_insn("alloca");
         unsafe {
             let alloca = if name.is_empty() {
@@ -499,7 +499,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                                       name.as_ptr())
             };
             if let Some(align) = align {
-                llvm::LLVMSetAlignment(alloca, align as c_uint);
+                llvm::LLVMSetAlignment(alloca, align.abi() as c_uint);
             }
             alloca
         }
@@ -512,12 +512,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
-    pub fn load(&self, ptr: ValueRef, align: Option<u32>) -> ValueRef {
+    pub fn load(&self, ptr: ValueRef, align: Option<Align>) -> ValueRef {
         self.count_insn("load");
         unsafe {
             let load = llvm::LLVMBuildLoad(self.llbuilder, ptr, noname());
             if let Some(align) = align {
-                llvm::LLVMSetAlignment(load, align as c_uint);
+                llvm::LLVMSetAlignment(load, align.abi() as c_uint);
             }
             load
         }
@@ -532,20 +532,19 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
-    pub fn atomic_load(&self, ptr: ValueRef, order: AtomicOrdering) -> ValueRef {
+    pub fn atomic_load(&self, ptr: ValueRef, order: AtomicOrdering, align: Align) -> ValueRef {
         self.count_insn("load.atomic");
         unsafe {
-            let ty = Type::from_ref(llvm::LLVMTypeOf(ptr));
-            let align = llalign_of_pref(self.ccx, ty.element_type());
-            llvm::LLVMRustBuildAtomicLoad(self.llbuilder, ptr, noname(), order,
-                                          align as c_uint)
+            let load = llvm::LLVMRustBuildAtomicLoad(self.llbuilder, ptr, noname(), order);
+            llvm::LLVMSetAlignment(load, align.abi() as c_uint);
+            load
         }
     }
 
 
     pub fn load_range_assert(&self, ptr: ValueRef, lo: u64,
                              hi: u64, signed: llvm::Bool,
-                             align: Option<u32>) -> ValueRef {
+                             align: Option<Align>) -> ValueRef {
         let value = self.load(ptr, align);
 
         unsafe {
@@ -564,7 +563,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         value
     }
 
-    pub fn load_nonnull(&self, ptr: ValueRef, align: Option<u32>) -> ValueRef {
+    pub fn load_nonnull(&self, ptr: ValueRef, align: Option<Align>) -> ValueRef {
         let value = self.load(ptr, align);
         unsafe {
             llvm::LLVMSetMetadata(value, llvm::MD_nonnull as c_uint,
@@ -574,7 +573,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         value
     }
 
-    pub fn store(&self, val: ValueRef, ptr: ValueRef, align: Option<u32>) -> ValueRef {
+    pub fn store(&self, val: ValueRef, ptr: ValueRef, align: Option<Align>) -> ValueRef {
         debug!("Store {:?} -> {:?}", Value(val), Value(ptr));
         assert!(!self.llbuilder.is_null());
         self.count_insn("store");
@@ -582,7 +581,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         unsafe {
             let store = llvm::LLVMBuildStore(self.llbuilder, val, ptr);
             if let Some(align) = align {
-                llvm::LLVMSetAlignment(store, align as c_uint);
+                llvm::LLVMSetAlignment(store, align.abi() as c_uint);
             }
             store
         }
@@ -600,14 +599,14 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
     }
 
-    pub fn atomic_store(&self, val: ValueRef, ptr: ValueRef, order: AtomicOrdering) {
+    pub fn atomic_store(&self, val: ValueRef, ptr: ValueRef,
+                        order: AtomicOrdering, align: Align) {
         debug!("Store {:?} -> {:?}", Value(val), Value(ptr));
         self.count_insn("store.atomic");
         let ptr = self.check_store(val, ptr);
         unsafe {
-            let ty = Type::from_ref(llvm::LLVMTypeOf(ptr));
-            let align = llalign_of_pref(self.ccx, ty.element_type());
-            llvm::LLVMRustBuildAtomicStore(self.llbuilder, val, ptr, order, align as c_uint);
+            let store = llvm::LLVMRustBuildAtomicStore(self.llbuilder, val, ptr, order);
+            llvm::LLVMSetAlignment(store, align.abi() as c_uint);
         }
     }
 
@@ -1225,5 +1224,37 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             .collect();
 
         return Cow::Owned(casted_args);
+    }
+
+    pub fn lifetime_start(&self, ptr: ValueRef, size: Size) {
+        self.call_lifetime_intrinsic("llvm.lifetime.start", ptr, size);
+    }
+
+    pub fn lifetime_end(&self, ptr: ValueRef, size: Size) {
+        self.call_lifetime_intrinsic("llvm.lifetime.end", ptr, size);
+    }
+
+    /// If LLVM lifetime intrinsic support is enabled (i.e. optimizations
+    /// on), and `ptr` is nonzero-sized, then extracts the size of `ptr`
+    /// and the intrinsic for `lt` and passes them to `emit`, which is in
+    /// charge of generating code to call the passed intrinsic on whatever
+    /// block of generated code is targetted for the intrinsic.
+    ///
+    /// If LLVM lifetime intrinsic support is disabled (i.e.  optimizations
+    /// off) or `ptr` is zero-sized, then no-op (does not call `emit`).
+    fn call_lifetime_intrinsic(&self, intrinsic: &str, ptr: ValueRef, size: Size) {
+        if self.ccx.sess().opts.optimize == config::OptLevel::No {
+            return;
+        }
+
+        let size = size.bytes();
+        if size == 0 {
+            return;
+        }
+
+        let lifetime_intrinsic = self.ccx.get_intrinsic(intrinsic);
+
+        let ptr = self.pointercast(ptr, Type::i8p(self.ccx));
+        self.call(lifetime_intrinsic, &[C_usize(self.ccx, size), ptr], None);
     }
 }
