@@ -9,6 +9,7 @@
 // except according to those terms.
 
 // compile-flags: -C no-prepopulate-passes
+// ignore-tidy-linelength
 
 #![crate_type = "lib"]
 
@@ -24,9 +25,9 @@ pub fn ref_dst(s: &[u8]) {
     // We used to generate an extra alloca and memcpy to ref the dst, so check that we copy
     // directly to the alloca for "x"
 // CHECK: %2 = bitcast i8* %0 to [0 x i8]*
-// CHECK: [[X0:%[0-9]+]] = getelementptr {{.*}} { [0 x i8]*, [[USIZE]] }* %x, i32 0, i32 0
+// CHECK: [[X0:%[0-9]+]] = getelementptr {{.*}} { [0 x i8], [0 x i8]*, [0 x i8], [[USIZE]], [0 x i8] }* %x, i32 0, i32 1
 // CHECK: store [0 x i8]* %2, [0 x i8]** [[X0]]
-// CHECK: [[X1:%[0-9]+]] = getelementptr {{.*}} { [0 x i8]*, [[USIZE]] }* %x, i32 0, i32 1
+// CHECK: [[X1:%[0-9]+]] = getelementptr {{.*}} { [0 x i8], [0 x i8]*, [0 x i8], [[USIZE]], [0 x i8] }* %x, i32 0, i32 3
 // CHECK: store [[USIZE]] %1, [[USIZE]]* [[X1]]
 
     let x = &*s;
