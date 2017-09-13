@@ -19,6 +19,7 @@ use rustc::traits;
 use rustc::hir::def::{Def, CtorKind};
 use rustc::hir::def_id::DefId;
 use rustc::ty::{self, Ty, TyCtxt};
+use rustc::ty::layout::LayoutOf;
 use rustc::ty::maps::Providers;
 use rustc::ty::util::IntTypeExt;
 use rustc::ty::subst::{Substs, Subst};
@@ -334,7 +335,7 @@ fn eval_const_expr_partial<'a, 'tcx>(cx: &ConstContext<'a, 'tcx>,
           if tcx.fn_sig(def_id).abi() == Abi::RustIntrinsic {
             let layout_of = |ty: Ty<'tcx>| {
                 let ty = tcx.erase_regions(&ty);
-                tcx.at(e.span).layout_raw(cx.param_env.reveal_all().and(ty)).map_err(|err| {
+                (tcx.at(e.span), cx.param_env).layout_of(ty).map_err(|err| {
                     ConstEvalErr { span: e.span, kind: LayoutError(err) }
                 })
             };
