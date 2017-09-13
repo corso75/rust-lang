@@ -12,6 +12,7 @@ pub use self::Integer::*;
 pub use self::Layout::*;
 pub use self::Primitive::*;
 
+use rustc_back::slice::ref_slice;
 use session::{self, DataTypeKind, Session};
 use ty::{self, Ty, TyCtxt, TypeFoldable, ReprOptions, ReprFlags};
 
@@ -582,7 +583,7 @@ pub enum Primitive {
     Pointer
 }
 
-impl Primitive {
+impl<'a, 'tcx> Primitive {
     pub fn size<C: HasDataLayout>(self, cx: C) -> Size {
         let dl = cx.data_layout();
 
@@ -609,6 +610,15 @@ impl Primitive {
             F32 => dl.f32_align,
             F64 => dl.f64_align,
             Pointer => dl.pointer_align
+        }
+    }
+
+    pub fn to_ty(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Ty<'tcx> {
+        match *self {
+            Int(i) => i.to_ty(tcx, false),
+            F32 => tcx.types.f32,
+            F64 => tcx.types.f64,
+            Pointer => tcx.mk_mut_ptr(tcx.mk_nil()),
         }
     }
 }
@@ -1191,9 +1201,7 @@ impl<'a, 'tcx> Layout {
             let layout = tcx.intern_layout(layout);
             let fields = match *layout {
                 Scalar { .. } |
-                CEnum { .. } |
-                RawNullablePointer { .. } |
-                StructWrappedNullablePointer { .. } => {
+                CEnum { .. } => {
                     FieldPlacement::union(0)
                 }
 
@@ -1230,7 +1238,14 @@ impl<'a, 'tcx> Layout {
                     FieldPlacement::union(def.struct_variant().fields.len())
                 }
 
-                General { .. } => FieldPlacement::union(1)
+                General { .. } |
+                RawNullablePointer { .. } => FieldPlacement::union(1),
+
+                StructWrappedNullablePointer { ref discr_offset, .. } => {
+                    FieldPlacement::Arbitrary {
+                        offsets: ref_slice(discr_offset)
+                    }
+                }
             };
             Ok(CachedLayout {
                 layout,
@@ -2275,7 +2290,7 @@ impl<'a, 'tcx> FullLayout<'tcx> {
             match tcx.struct_tail(pointee).sty {
                 ty::TySlice(element) => slice(element),
                 ty::TyStr => slice(tcx.types.u8),
-                ty::TyDynamic(..) => tcx.mk_mut_ptr(tcx.mk_nil()),
+                ty::TyDynamic(..) => Pointer.to_ty(tcx),
                 _ => bug!("FullLayout::field_type({:?}): not applicable", self)
             }
         };
@@ -2331,6 +2346,10 @@ impl<'a, 'tcx> FullLayout<'tcx> {
                             // Discriminant field for enums (where applicable).
                             General { discr, .. } => {
                                 return [discr.to_ty(tcx, false)][i];
+                            }
+                            RawNullablePointer { discr, .. } |
+                            StructWrappedNullablePointer { discr, .. } => {
+                                return [discr.to_ty(tcx)][i];
                             }
                             _ if def.variants.len() > 1 => return [][i],
 
