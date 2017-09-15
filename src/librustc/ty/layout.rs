@@ -1122,24 +1122,14 @@ pub enum Layout {
     },
 
     /// Two cases distinguished by a nullable pointer: the case with discriminant
-    /// `nndiscr` must have single field which is known to be nonnull due to its type.
-    /// The other case is known to be zero sized. Hence we represent the enum
-    /// as simply a nullable pointer: if not null it indicates the `nndiscr` variant,
-    /// otherwise it indicates the other case.
+    /// `nndiscr` is represented by the struct `nonnull`, where the field at the
+    /// `discr_offset` offset is known to be nonnull due to its type; if that field is null, then
+    /// it represents the other case, which is known to be zero sized.
     ///
     /// For example, `std::option::Option` instantiated at a safe pointer type
     /// is represented such that `None` is a null pointer and `Some` is the
     /// identity function.
-    RawNullablePointer {
-        nndiscr: u64,
-        discr: Primitive
-    },
-
-    /// Two cases distinguished by a nullable pointer: the case with discriminant
-    /// `nndiscr` is represented by the struct `nonnull`, where the field at the
-    /// `discr_offset` offset is known to be nonnull due to its type; if that field is null, then
-    /// it represents the other case, which is known to be zero sized.
-    StructWrappedNullablePointer {
+    NullablePointer {
         nndiscr: u64,
         nonnull: Struct,
         discr: Primitive,
@@ -1248,18 +1238,16 @@ impl<'a, 'tcx> Layout {
                     FieldPlacement::union(def.struct_variant().fields.len())
                 }
 
-                General { .. } |
-                RawNullablePointer { .. } => FieldPlacement::union(1),
+                General { .. } => FieldPlacement::union(1),
 
-                StructWrappedNullablePointer { ref discr_offset, .. } => {
+                NullablePointer { ref discr_offset, .. } => {
                     FieldPlacement::Arbitrary {
                         offsets: ref_slice(discr_offset)
                     }
                 }
             };
             let abi = match *layout {
-                Scalar { value, .. } |
-                RawNullablePointer { discr: value, .. } => Abi::Scalar(value),
+                Scalar { value, .. } => Abi::Scalar(value),
                 CEnum { discr, .. } => Abi::Scalar(Int(discr)),
 
                 Vector { .. } => Abi::Vector,
@@ -1268,8 +1256,15 @@ impl<'a, 'tcx> Layout {
                 FatPointer { .. } |
                 Univariant(_) |
                 UntaggedUnion(_) |
-                General { .. } |
-                StructWrappedNullablePointer { .. } => Abi::Aggregate
+                General { .. } => Abi::Aggregate,
+
+                NullablePointer { discr, discr_offset, .. } => {
+                    if discr_offset.bytes() == 0 && discr.size(cx) == layout.size(cx) {
+                        Abi::Scalar(discr)
+                    } else {
+                        Abi::Aggregate
+                    }
+                }
             };
             Ok(CachedLayout {
                 layout,
@@ -1549,17 +1544,7 @@ impl<'a, 'tcx> Layout {
                         // HACK(eddyb) work around not being able to move
                         // out of arrays with just the indexing operator.
                         let st = if discr == 0 { st0 } else { st1 };
-
-                        // FIXME(eddyb) should take advantage of a newtype.
-                        if offset.bytes() == 0 && primitive.size(dl) == st.stride() &&
-                           variants[discr].len() == 1 {
-                            return success(RawNullablePointer {
-                                nndiscr: discr as u64,
-                                discr: primitive,
-                            });
-                        }
-
-                        return success(StructWrappedNullablePointer {
+                        return success(NullablePointer {
                             nndiscr: discr as u64,
                             nonnull: st,
                             discr: primitive,
@@ -1695,8 +1680,7 @@ impl<'a, 'tcx> Layout {
         match *self {
             Scalar {..} | Vector {..} | FatPointer {..} |
             CEnum {..} | UntaggedUnion {..} | General {..} |
-            RawNullablePointer {..} |
-            StructWrappedNullablePointer {..} => false,
+            NullablePointer {..} => false,
 
             Array { sized, .. } |
             Univariant(Struct { sized, .. }) => !sized
@@ -1707,7 +1691,7 @@ impl<'a, 'tcx> Layout {
         let dl = cx.data_layout();
 
         match *self {
-            Scalar { value, .. } | RawNullablePointer { discr: value, .. } => {
+            Scalar { value, .. } => {
                 value.size(dl)
             }
 
@@ -1740,7 +1724,7 @@ impl<'a, 'tcx> Layout {
             UntaggedUnion(ref un) => un.stride(),
 
             Univariant(ref variant) |
-            StructWrappedNullablePointer { nonnull: ref variant, .. } => {
+            NullablePointer { nonnull: ref variant, .. } => {
                 variant.stride()
             }
         }
@@ -1750,7 +1734,7 @@ impl<'a, 'tcx> Layout {
         let dl = cx.data_layout();
 
         match *self {
-            Scalar { value, .. } | RawNullablePointer { discr: value, .. } => {
+            Scalar { value, .. } => {
                 value.align(dl)
             }
 
@@ -1774,7 +1758,7 @@ impl<'a, 'tcx> Layout {
             UntaggedUnion(ref un) => un.align,
 
             Univariant(ref variant) |
-            StructWrappedNullablePointer { nonnull: ref variant, .. } => {
+            NullablePointer { nonnull: ref variant, .. } => {
                 variant.align
             }
         }
@@ -1789,7 +1773,7 @@ impl<'a, 'tcx> Layout {
         match *self {
             Array { primitive_align, .. } | General { primitive_align, .. } => primitive_align,
             Univariant(ref variant) |
-            StructWrappedNullablePointer { nonnull: ref variant, .. } => {
+            NullablePointer { nonnull: ref variant, .. } => {
                 variant.primitive_align
             },
 
@@ -1904,11 +1888,11 @@ impl<'a, 'tcx> Layout {
         };
 
         match *layout {
-            Layout::StructWrappedNullablePointer { nonnull: ref variant_layout,
-                                                   nndiscr,
-                                                   discr: _,
-                                                   discr_offset: _ } => {
-                debug!("print-type-size t: `{:?}` adt struct-wrapped nullable nndiscr {} is {:?}",
+            Layout::NullablePointer { nonnull: ref variant_layout,
+                                      nndiscr,
+                                      discr: _,
+                                      discr_offset: _ } => {
+                debug!("print-type-size t: `{:?}` adt nullable nndiscr {} is {:?}",
                        ty, nndiscr, variant_layout);
                 let variant_def = &adt_def.variants[nndiscr as usize];
                 let fields: Vec<_> =
@@ -1920,13 +1904,6 @@ impl<'a, 'tcx> Layout {
                        vec![build_variant_info(Some(variant_def.name),
                                                &fields,
                                                variant_layout)]);
-            }
-            Layout::RawNullablePointer { nndiscr, discr } => {
-                debug!("print-type-size t: `{:?}` adt raw nullable nndiscr {} is {:?}",
-                       ty, nndiscr, discr);
-                let variant_def = &adt_def.variants[nndiscr as usize];
-                record(adt_kind.into(), None,
-                       vec![build_primitive_info(variant_def.name, &discr)]);
             }
             Layout::Univariant(ref variant_layout) => {
                 let variant_names = || {
@@ -2289,7 +2266,7 @@ impl<'a, 'tcx> FullLayout<'tcx> {
                 }
             }
 
-            StructWrappedNullablePointer { nndiscr, ref nonnull, .. }
+            NullablePointer { nndiscr, ref nonnull, .. }
                     if nndiscr as usize == variant_index => {
                 FieldPlacement::Arbitrary {
                     offsets: &nonnull.offsets
@@ -2376,8 +2353,7 @@ impl<'a, 'tcx> FullLayout<'tcx> {
                             General { discr, .. } => {
                                 return [discr.to_ty(tcx, false)][i];
                             }
-                            RawNullablePointer { discr, .. } |
-                            StructWrappedNullablePointer { discr, .. } => {
+                            NullablePointer { discr, .. } => {
                                 return [discr.to_ty(tcx)][i];
                             }
                             _ if def.variants.len() > 1 => return [][i],
@@ -2457,11 +2433,7 @@ impl<'gcx> HashStable<StableHashingContext<'gcx>> for Layout
                 align.hash_stable(hcx, hasher);
                 primitive_align.hash_stable(hcx, hasher);
             }
-            RawNullablePointer { nndiscr, ref discr } => {
-                nndiscr.hash_stable(hcx, hasher);
-                discr.hash_stable(hcx, hasher);
-            }
-            StructWrappedNullablePointer {
+            NullablePointer {
                 nndiscr,
                 ref nonnull,
                 ref discr,
