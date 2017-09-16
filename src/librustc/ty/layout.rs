@@ -838,7 +838,7 @@ impl<'a, 'tcx> Struct {
             }
             (&CEnum { discr, .. }, &ty::TyAdt(def, _)) => {
                 if def.discriminants(tcx).all(|d| d.to_u128_unchecked() != 0) {
-                    Ok(Some((Size::from_bytes(0), Int(discr))))
+                    Ok(Some((Size::from_bytes(0), discr)))
                 } else {
                     Ok(None)
                 }
@@ -1086,7 +1086,7 @@ pub enum Layout {
 
     /// C-like enums; basically an integer.
     CEnum {
-        discr: Integer,
+        discr: Primitive,
         signed: bool,
         /// Inclusive discriminant range.
         /// If min > max, it represents min...u64::MAX followed by 0...max.
@@ -1107,7 +1107,7 @@ pub enum Layout {
     /// all space reserved for the discriminant, and their first field starts
     /// at a non-0 offset, after where the discriminant would go.
     General {
-        discr: Integer,
+        discr: Primitive,
         variants: Vec<Struct>,
         size: Size,
         align: Align,
@@ -1240,8 +1240,8 @@ impl<'a, 'tcx> Layout {
                 }
             };
             let abi = match *layout {
-                Scalar(value) => Abi::Scalar(value),
-                CEnum { discr, .. } => Abi::Scalar(Int(discr)),
+                Scalar(value) |
+                CEnum { discr: value, .. } => Abi::Scalar(value),
 
                 Vector { .. } => Abi::Vector,
 
@@ -1441,7 +1441,7 @@ impl<'a, 'tcx> Layout {
                     // grok.
                     let (discr, signed) = Integer::repr_discr(tcx, ty, &def.repr, min, max);
                     return success(CEnum {
-                        discr,
+                        discr: Int(discr),
                         signed,
                         // FIXME: should be u128?
                         min: min as u64,
@@ -1625,7 +1625,7 @@ impl<'a, 'tcx> Layout {
                 }
 
                 General {
-                    discr: ity,
+                    discr: Int(ity),
                     variants,
                     size,
                     align,
@@ -1701,7 +1701,7 @@ impl<'a, 'tcx> Layout {
                  metadata.size(dl)).abi_align(self.align(dl))
             }
 
-            CEnum { discr, .. } => Int(discr).size(dl),
+            CEnum { discr, .. } => discr.size(dl),
             General { size, .. } => size,
             UntaggedUnion(ref un) => un.stride(),
 
@@ -1735,7 +1735,7 @@ impl<'a, 'tcx> Layout {
                 Pointer.align(dl).max(metadata.align(dl))
             }
 
-            CEnum { discr, .. } => Int(discr).align(dl),
+            CEnum { discr, .. } => discr.align(dl),
             Array { align, .. } | General { align, .. } => align,
             UntaggedUnion(ref un) => un.align,
 
@@ -1837,7 +1837,7 @@ impl<'a, 'tcx> Layout {
             }
         };
 
-        let build_primitive_info = |name: ast::Name, value: &Primitive| {
+        let build_primitive_info = |name: ast::Name, value: Primitive| {
             session::VariantInfo {
                 name: Some(name.to_string()),
                 kind: session::SizeKind::Exact,
@@ -1930,7 +1930,7 @@ impl<'a, 'tcx> Layout {
                                                            variant_layout)
                                     })
                                     .collect();
-                record(adt_kind.into(), Some(discr.size()), variant_infos);
+                record(adt_kind.into(), Some(discr.size(tcx)), variant_infos);
             }
 
             Layout::UntaggedUnion(ref un) => {
@@ -1945,11 +1945,10 @@ impl<'a, 'tcx> Layout {
                 let variant_infos: Vec<_> =
                     adt_def.variants.iter()
                                     .map(|variant_def| {
-                                        build_primitive_info(variant_def.name,
-                                                             &Primitive::Int(discr))
+                                        build_primitive_info(variant_def.name, discr)
                                     })
                                     .collect();
-                record(adt_kind.into(), Some(discr.size()), variant_infos);
+                record(adt_kind.into(), Some(discr.size(tcx)), variant_infos);
             }
 
             // other cases provide little interesting (i.e. adjustable
@@ -2332,9 +2331,7 @@ impl<'a, 'tcx> FullLayout<'tcx> {
                     match self.variant_index {
                         None => match *self.layout {
                             // Discriminant field for enums (where applicable).
-                            General { discr, .. } => {
-                                return [discr.to_ty(tcx, false)][i];
-                            }
+                            General { discr, .. } |
                             NullablePointer { discr, .. } => {
                                 return [discr.to_ty(tcx)][i];
                             }
