@@ -80,7 +80,7 @@ use hir;
 /// Internal storage
 pub struct GlobalArenas<'tcx> {
     // internings
-    layout: TypedArena<Layout>,
+    layout: TypedArena<Layout<'tcx>>,
 
     // references
     generics: TypedArena<ty::Generics>,
@@ -931,7 +931,7 @@ pub struct GlobalCtxt<'tcx> {
 
     stability_interner: RefCell<FxHashSet<&'tcx attr::Stability>>,
 
-    layout_interner: RefCell<FxHashSet<&'tcx Layout>>,
+    layout_interner: RefCell<FxHashSet<&'tcx Layout<'tcx>>>,
 
     /// A vector of every trait accessible in the whole crate
     /// (i.e. including those from subcrates). This is used only for
@@ -1029,7 +1029,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         interned
     }
 
-    pub fn intern_layout(self, layout: Layout) -> &'gcx Layout {
+    pub fn intern_layout(self, layout: Layout<'gcx>) -> &'gcx Layout<'gcx> {
         if let Some(layout) = self.layout_interner.borrow().get(&layout) {
             return layout;
         }
