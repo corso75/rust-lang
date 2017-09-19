@@ -1117,7 +1117,7 @@ impl<'tcx> EnumMemberDescriptionFactory<'tcx> {
                     }
                 }).collect()
             },
-            layout::Univariant(_) => {
+            layout::Univariant => {
                 assert!(adt.variants.len() <= 1);
 
                 if adt.variants.is_empty() {
@@ -1152,7 +1152,6 @@ impl<'tcx> EnumMemberDescriptionFactory<'tcx> {
             layout::NullablePointer {
                 nndiscr,
                 discr,
-                discr_offset,
                 ..
             } => {
                 let variant = self.type_rep.for_variant(nndiscr as usize);
@@ -1197,7 +1196,7 @@ impl<'tcx> EnumMemberDescriptionFactory<'tcx> {
                 }
                 compute_field_path(cx, &mut name,
                                    self.type_rep,
-                                   discr_offset,
+                                   self.type_rep.fields.offset(0),
                                    discr.size(cx));
                 name.push_str(&adt.variants[(1 - nndiscr) as usize].name.as_str());
 
