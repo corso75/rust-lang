@@ -1511,10 +1511,7 @@ impl<'a, 'tcx> Layout {
                         discr_range: (min as u64)...(max as u64),
                         variants
                     },
-                    fields: FieldPlacement::Arbitrary {
-                        offsets: vec![Size::from_bytes(0)],
-                        memory_index: vec![0]
-                    },
+                    fields: FieldPlacement::Union(1),
                     abi: if discr.size(dl) == size {
                         Abi::Scalar(discr)
                     } else {

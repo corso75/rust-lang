@@ -100,7 +100,6 @@ pub mod back {
 }
 
 mod abi;
-mod adt;
 mod allocator;
 mod asm;
 mod assert_module_sources;
