@@ -765,6 +765,15 @@ impl Abi {
         }
     }
 
+    /// Returns true if the type is a ZST and not unsized.
+    pub fn is_zst(&self) -> bool {
+        match *self {
+            Abi::Scalar(_) => false,
+            Abi::Vector { count, .. } => count == 0,
+            Abi::Aggregate { sized, size, .. } => sized && size.bytes() == 0
+        }
+    }
+
     pub fn size<C: HasDataLayout>(&self, cx: C) -> Size {
         let dl = cx.data_layout();
 
@@ -1365,7 +1374,7 @@ impl<'a, 'tcx> Layout {
                    no_explicit_discriminants {
                     // Nullable pointer optimization
                     for i in 0..2 {
-                        if !variants[1 - i].iter().all(|f| f.size(dl).bytes() == 0) {
+                        if !variants[1 - i].iter().all(|f| f.is_zst()) {
                             continue;
                         }
 
@@ -1426,7 +1435,7 @@ impl<'a, 'tcx> Layout {
                     for i in st.fields.index_by_increasing_offset() {
                         let field = field_layouts[i];
                         let field_align = field.align(dl);
-                        if field.size(dl).bytes() != 0 || field_align.abi() != 1 {
+                        if !field.is_zst() || field_align.abi() != 1 {
                             start_align = start_align.min(field_align);
                             break;
                         }
@@ -2104,6 +2113,11 @@ impl<'a, 'tcx> FullLayout<'tcx> {
     /// Returns true if the fields of the layout are packed.
     pub fn is_packed(&self) -> bool {
         self.abi.is_packed()
+    }
+
+    /// Returns true if the type is a ZST and not unsized.
+    pub fn is_zst(&self) -> bool {
+        self.abi.is_zst()
     }
 
     pub fn size<C: HasDataLayout>(&self, cx: C) -> Size {
