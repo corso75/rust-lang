@@ -21,10 +21,10 @@ pub fn fat_ptr_base_ty<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>) -> 
     match ty.sty {
         ty::TyRef(_, ty::TypeAndMut { ty: t, .. }) |
         ty::TyRawPtr(ty::TypeAndMut { ty: t, .. }) if !ccx.shared().type_is_sized(t) => {
-            ccx.llvm_type_of(t).ptr_to()
+            ccx.layout_of(t).llvm_type(ccx).ptr_to()
         }
         ty::TyAdt(def, _) if def.is_box() => {
-            ccx.llvm_type_of(ty.boxed_ty()).ptr_to()
+            ccx.layout_of(ty.boxed_ty()).llvm_type(ccx).ptr_to()
         }
         _ => bug!("expected fat ptr ty but got {:?}", ty)
     }
@@ -53,7 +53,7 @@ fn uncached_llvm_type<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 // unsized).
                 cx.str_slice_type()
             } else {
-                let ptr_ty = cx.llvm_type_of(ty).ptr_to();
+                let ptr_ty = cx.layout_of(ty).llvm_type(cx).ptr_to();
                 let info_ty = unsized_info_ty(cx, ty);
                 Type::struct_(cx, &[
                     Type::array(&Type::i8(cx), 0),
@@ -64,7 +64,7 @@ fn uncached_llvm_type<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 ], false)
             }
         } else {
-            cx.llvm_type_of(ty).ptr_to()
+            cx.layout_of(ty).llvm_type(cx).ptr_to()
         }
     };
     match ty.sty {
@@ -89,13 +89,15 @@ fn uncached_llvm_type<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             layout::Int(i, _) => Type::from_integer(cx, i),
             layout::F32 => Type::f32(cx),
             layout::F64 => Type::f64(cx),
-            layout::Pointer => cx.llvm_type_of(layout::Pointer.to_ty(cx.tcx()))
+            layout::Pointer => {
+                cx.layout_of(layout::Pointer.to_ty(cx.tcx())).llvm_type(cx)
+            }
         };
         return llty;
     }
 
     if let layout::Abi::Vector { .. } = layout.abi {
-        return Type::vector(&cx.llvm_type_of(layout.field(cx, 0).ty),
+        return Type::vector(&layout.field(cx, 0).llvm_type(cx),
                             layout.fields.count() as u64);
     }
 
@@ -136,7 +138,7 @@ fn uncached_llvm_type<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             }
         }
         layout::FieldPlacement::Array { count, .. } => {
-            Type::array(&cx.llvm_type_of(layout.field(cx, 0).ty), count)
+            Type::array(&layout.field(cx, 0).llvm_type(cx), count)
         }
         layout::FieldPlacement::Arbitrary { .. } => {
             match name {
@@ -175,8 +177,7 @@ pub fn struct_llfields<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         result.push(Type::array(&Type::i8(cx), padding.bytes()));
         debug!("    padding before: {:?}", padding);
 
-        let llty = cx.llvm_type_of(field.ty);
-        result.push(llty);
+        result.push(field.llvm_type(cx));
 
         offset = target_offset + field.size(cx);
     }
@@ -211,12 +212,16 @@ impl<'a, 'tcx> CrateContext<'a, 'tcx> {
         let layout = self.layout_of(ty);
         (layout.size(self), layout.align(self))
     }
+}
 
-    /// Returns alignment if it is different than the primitive alignment.
-    pub fn over_align_of(&self, ty: Ty<'tcx>) -> Option<Align> {
-        self.layout_of(ty).over_align(self)
-    }
+pub trait LayoutLlvmExt<'tcx> {
+    fn llvm_type<'a>(&self, ccx: &CrateContext<'a, 'tcx>) -> Type;
+    fn immediate_llvm_type<'a>(&self, ccx: &CrateContext<'a, 'tcx>) -> Type;
+    fn over_align(&self, ccx: &CrateContext) -> Option<Align>;
+    fn llvm_field_index(&self, index: usize) -> u64;
+}
 
+impl<'tcx> LayoutLlvmExt<'tcx> for FullLayout<'tcx> {
     /// Get the LLVM type corresponding to a Rust type, i.e. `rustc::ty::Ty`.
     /// The pointee type of the pointer in `LvalueRef` is always this type.
     /// For sized types, it is also the right LLVM type for an `alloca`
@@ -228,58 +233,48 @@ impl<'a, 'tcx> CrateContext<'a, 'tcx> {
     /// with the inner-most trailing unsized field using the "minimal unit"
     /// of that field's type - this is useful for taking the address of
     /// that field and ensuring the struct has the right alignment.
-    pub fn llvm_type_of(&self, ty: Ty<'tcx>) -> Type {    // Check the cache.
-        if let Some(&llty) = self.lltypes().borrow().get(&ty) {
+    fn llvm_type<'a>(&self, ccx: &CrateContext<'a, 'tcx>) -> Type {
+        // Check the cache.
+        if let Some(&llty) = ccx.lltypes().borrow().get(&self.ty) {
             return llty;
         }
 
-        debug!("type_of {:?}", ty);
+        debug!("llvm_type({:#?})", self);
 
-        assert!(!ty.has_escaping_regions(), "{:?} has escaping regions", ty);
+        assert!(!self.ty.has_escaping_regions(), "{:?} has escaping regions", self.ty);
 
         // Replace any typedef'd types with their equivalent non-typedef
         // type. This ensures that all LLVM nominal types that contain
         // Rust types are defined as the same LLVM types.  If we don't do
         // this then, e.g. `Option<{myfield: bool}>` would be a different
         // type than `Option<myrec>`.
-        let normal_ty = self.tcx().erase_regions(&ty);
-
-        if ty != normal_ty {
-            let llty = self.llvm_type_of(normal_ty);
-            debug!("--> normalized {:?} to {:?} llty={:?}", ty, normal_ty, llty);
-            self.lltypes().borrow_mut().insert(ty, llty);
-            return llty;
-        }
+        let normal_ty = ccx.tcx().erase_regions(&self.ty);
 
         let mut defer = None;
-        let llty = uncached_llvm_type(self, ty, &mut defer);
+        let llty = if self.ty != normal_ty {
+            ccx.layout_of(normal_ty).llvm_type(ccx)
+        } else {
+            uncached_llvm_type(ccx, self.ty, &mut defer)
+        };
+        debug!("--> mapped {:#?} to llty={:?}", self, llty);
 
-        debug!("--> mapped ty={:?} to llty={:?}", ty, llty);
-
-        self.lltypes().borrow_mut().insert(ty, llty);
+        ccx.lltypes().borrow_mut().insert(self.ty, llty);
 
         if let Some((mut llty, layout)) = defer {
-            llty.set_struct_body(&struct_llfields(self, layout), layout.is_packed())
+            llty.set_struct_body(&struct_llfields(ccx, layout), layout.is_packed())
         }
 
         llty
     }
 
-    pub fn immediate_llvm_type_of(&self, ty: Ty<'tcx>) -> Type {
-        if ty.is_bool() {
-            Type::i1(self)
+    fn immediate_llvm_type<'a>(&self, ccx: &CrateContext<'a, 'tcx>) -> Type {
+        if let layout::Abi::Scalar(layout::Int(layout::I1, _)) = self.abi {
+            Type::i1(ccx)
         } else {
-            self.llvm_type_of(ty)
+            self.llvm_type(ccx)
         }
     }
-}
 
-pub trait LayoutLlvmExt {
-    fn over_align(&self, ccx: &CrateContext) -> Option<Align>;
-    fn llvm_field_index(&self, index: usize) -> u64;
-}
-
-impl<'tcx> LayoutLlvmExt for FullLayout<'tcx> {
     fn over_align(&self, ccx: &CrateContext) -> Option<Align> {
         let align = self.align(ccx);
         let primitive_align = self.primitive_align(ccx);
