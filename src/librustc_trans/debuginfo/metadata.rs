@@ -31,7 +31,7 @@ use rustc::ty::util::TypeIdHasher;
 use rustc_data_structures::ToHex;
 use common::{self, CrateContext};
 use rustc::ty::{self, AdtKind, Ty};
-use rustc::ty::layout::{self, Align, LayoutOf, Size, FullLayout};
+use rustc::ty::layout::{self, Align, LayoutOf, Size, TyLayout};
 use rustc::session::{Session, config};
 use rustc::util::nodemap::FxHashMap;
 use rustc::util::common::path2cstr;
@@ -1010,7 +1010,7 @@ fn prepare_tuple_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 //=-----------------------------------------------------------------------------
 
 struct UnionMemberDescriptionFactory<'tcx> {
-    layout: FullLayout<'tcx>,
+    layout: TyLayout<'tcx>,
     variant: &'tcx ty::VariantDef,
     span: Span,
 }
@@ -1077,7 +1077,7 @@ fn prepare_union_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 // offset of zero bytes).
 struct EnumMemberDescriptionFactory<'tcx> {
     enum_type: Ty<'tcx>,
-    type_rep: FullLayout<'tcx>,
+    type_rep: TyLayout<'tcx>,
     discriminant_type_metadata: Option<DIType>,
     containing_scope: DIScope,
     span: Span,
@@ -1087,7 +1087,7 @@ impl<'tcx> EnumMemberDescriptionFactory<'tcx> {
     fn create_member_descriptions<'a>(&self, cx: &CrateContext<'a, 'tcx>)
                                       -> Vec<MemberDescription> {
         let adt = &self.enum_type.ty_adt_def().unwrap();
-        match *self.type_rep.layout {
+        match self.type_rep.layout {
             layout::Layout::General { ref variants, .. } => {
                 let discriminant_info = RegularDiscriminant(self.discriminant_type_metadata
                     .expect(""));
@@ -1178,7 +1178,7 @@ impl<'tcx> EnumMemberDescriptionFactory<'tcx> {
                 // of discriminant instead of us having to recover its path.
                 fn compute_field_path<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                                                 name: &mut String,
-                                                layout: FullLayout<'tcx>,
+                                                layout: TyLayout<'tcx>,
                                                 offset: Size,
                                                 size: Size) {
                     for i in 0..layout.fields.count() {
@@ -1258,7 +1258,7 @@ enum EnumDiscriminantInfo {
 // descriptions of the fields of the variant. This is a rudimentary version of a
 // full RecursiveTypeDescription.
 fn describe_enum_variant<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
-                                   layout: layout::FullLayout<'tcx>,
+                                   layout: layout::TyLayout<'tcx>,
                                    variant: &'tcx ty::VariantDef,
                                    discriminant_info: EnumDiscriminantInfo,
                                    containing_scope: DIScope,
@@ -1389,7 +1389,7 @@ fn prepare_enum_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 
     let type_rep = cx.layout_of(enum_type);
 
-    let discriminant_type_metadata = match *type_rep.layout {
+    let discriminant_type_metadata = match type_rep.layout {
         layout::Layout::NullablePointer { .. } |
         layout::Layout::Univariant { .. } => None,
         layout::Layout::General { discr, .. } => Some(discriminant_type_metadata(discr)),

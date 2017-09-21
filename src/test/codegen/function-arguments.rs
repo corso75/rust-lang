@@ -97,43 +97,43 @@ pub fn struct_return() -> S {
 fn helper(_: usize) {
 }
 
-// CHECK: @slice(i8* noalias nonnull readonly, [[USIZE]])
+// CHECK: @slice([0 x i8]* noalias nonnull readonly, [[USIZE]])
 // FIXME #25759 This should also have `nocapture`
 #[no_mangle]
 fn slice(_: &[u8]) {
 }
 
-// CHECK: @mutable_slice(i8* nonnull, [[USIZE]])
+// CHECK: @mutable_slice([0 x i8]* nonnull, [[USIZE]])
 // FIXME #25759 This should also have `nocapture`
 // ... there's this LLVM bug that forces us to not use noalias, see #29485
 #[no_mangle]
 fn mutable_slice(_: &mut [u8]) {
 }
 
-// CHECK: @unsafe_slice(%UnsafeInner* nonnull, [[USIZE]])
+// CHECK: @unsafe_slice([0 x %UnsafeInner]* nonnull, [[USIZE]])
 // unsafe interior means this isn't actually readonly and there may be aliases ...
 #[no_mangle]
 pub fn unsafe_slice(_: &[UnsafeInner]) {
 }
 
-// CHECK: @str(i8* noalias nonnull readonly, [[USIZE]])
+// CHECK: @str([0 x i8]* noalias nonnull readonly, [[USIZE]])
 // FIXME #25759 This should also have `nocapture`
 #[no_mangle]
 fn str(_: &[u8]) {
 }
 
-// CHECK: @trait_borrow({}* nonnull, {}* noalias nonnull readonly)
+// CHECK: @trait_borrow(%"core::ops::drop::Drop"* nonnull, {}* noalias nonnull readonly)
 // FIXME #25759 This should also have `nocapture`
 #[no_mangle]
 fn trait_borrow(_: &Drop) {
 }
 
-// CHECK: @trait_box({}* noalias nonnull, {}* noalias nonnull readonly)
+// CHECK: @trait_box(%"core::ops::drop::Drop"* noalias nonnull, {}* noalias nonnull readonly)
 #[no_mangle]
 fn trait_box(_: Box<Drop>) {
 }
 
-// CHECK: { [0 x i8], [0 x i16]*, [0 x i8], [[USIZE]], [0 x i8] } @return_slice(i16* noalias nonnull readonly, [[USIZE]])
+// CHECK: { [0 x i8], [0 x i16]*, [0 x i8], [[USIZE]], [0 x i8] } @return_slice([0 x i16]* noalias nonnull readonly, [[USIZE]])
 #[no_mangle]
 fn return_slice(x: &[u16]) -> &[u16] {
   x
