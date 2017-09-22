@@ -741,10 +741,7 @@ pub enum Abi {
     Aggregate {
         /// If true, the size is exact, otherwise it's only a lower bound.
         sized: bool,
-        packed: bool,
-        align: Align,
-        primitive_align: Align,
-        size: Size
+        packed: bool
     }
 }
 
@@ -762,68 +759,6 @@ impl Abi {
         match *self {
             Abi::Scalar(_) | Abi::Vector { .. } => false,
             Abi::Aggregate { packed, .. } => packed
-        }
-    }
-
-    /// Returns true if the type is a ZST and not unsized.
-    pub fn is_zst(&self) -> bool {
-        match *self {
-            Abi::Scalar(_) => false,
-            Abi::Vector { count, .. } => count == 0,
-            Abi::Aggregate { sized, size, .. } => sized && size.bytes() == 0
-        }
-    }
-
-    pub fn size<C: HasDataLayout>(&self, cx: C) -> Size {
-        let dl = cx.data_layout();
-
-        match *self {
-            Abi::Scalar(value) => value.size(dl),
-
-            Abi::Vector { element, count } => {
-                let element_size = element.size(dl);
-                let vec_size = match element_size.checked_mul(count, dl) {
-                    Some(size) => size,
-                    None => bug!("Layout::size({:?}): {} * {} overflowed",
-                                 self, element_size.bytes(), count)
-                };
-                vec_size.abi_align(self.align(dl))
-            }
-
-            Abi::Aggregate { size, .. } => size
-        }
-    }
-
-    pub fn align<C: HasDataLayout>(&self, cx: C) -> Align {
-        let dl = cx.data_layout();
-
-        match *self {
-            Abi::Scalar(value) => value.align(dl),
-
-            Abi::Vector { element, count } => {
-                let elem_size = element.size(dl);
-                let vec_size = match elem_size.checked_mul(count, dl) {
-                    Some(size) => size,
-                    None => bug!("Layout::align({:?}): {} * {} overflowed",
-                                 self, elem_size.bytes(), count)
-                };
-                dl.vector_align(vec_size)
-            }
-
-            Abi::Aggregate { align, .. } => align
-        }
-    }
-
-    pub fn size_and_align<C: HasDataLayout>(&self, cx: C) -> (Size, Align) {
-        (self.size(cx), self.align(cx))
-    }
-
-    /// Returns alignment before repr alignment is applied
-    pub fn primitive_align<C: HasDataLayout>(&self, cx: C) -> Align {
-        match *self {
-            Abi::Aggregate { primitive_align, .. } => primitive_align,
-
-            _ => self.align(cx.data_layout())
         }
     }
 }
@@ -905,6 +840,9 @@ pub struct CachedLayout {
     pub layout: Layout,
     pub fields: FieldPlacement,
     pub abi: Abi,
+    pub align: Align,
+    pub primitive_align: Align,
+    pub size: Size
 }
 
 fn layout_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
@@ -941,12 +879,16 @@ impl<'a, 'tcx> Layout {
                         -> Result<&'tcx CachedLayout, LayoutError<'tcx>> {
         let cx = (tcx, param_env);
         let dl = cx.data_layout();
-        let scalar = |value| {
+        let scalar = |value: Primitive| {
+            let align = value.align(dl);
             tcx.intern_layout(CachedLayout {
                 variant_index: None,
                 layout: Layout::Scalar,
                 fields: FieldPlacement::Union(0),
-                abi: Abi::Scalar(value)
+                abi: Abi::Scalar(value),
+                size: value.size(dl),
+                align,
+                primitive_align: align
             })
         };
         #[derive(Copy, Clone, Debug)]
@@ -999,11 +941,11 @@ impl<'a, 'tcx> Layout {
                 if end > 0 {
                     let optimizing  = &mut inverse_memory_index[..end];
                     if sort_ascending {
-                        optimizing.sort_by_key(|&x| fields[x as usize].align(dl).abi());
+                        optimizing.sort_by_key(|&x| fields[x as usize].align.abi());
                     } else {
                         optimizing.sort_by(| &a, &b | {
-                            let a = fields[a as usize].align(dl).abi();
-                            let b = fields[b as usize].align(dl).abi();
+                            let a = fields[a as usize].align.abi();
+                            let b = fields[b as usize].align.abi();
                             b.cmp(&a)
                         });
                     }
@@ -1035,16 +977,15 @@ impl<'a, 'tcx> Layout {
 
                 // Invariant: offset < dl.obj_size_bound() <= 1<<61
                 if !packed {
-                    let field_align = field.align(dl);
-                    align = align.max(field_align);
-                    primitive_align = primitive_align.max(field.primitive_align(dl));
-                    offset = offset.abi_align(field_align);
+                    offset = offset.abi_align(field.align);
+                    align = align.max(field.align);
+                    primitive_align = primitive_align.max(field.primitive_align);
                 }
 
-                debug!("univariant offset: {:?} field: {:?} {:?}", offset, field, field.size(dl));
+                debug!("univariant offset: {:?} field: {:#?}", offset, field);
                 offsets[*i as usize] = offset;
 
-                offset = offset.checked_add(field.size(dl), dl)
+                offset = offset.checked_add(field.size, dl)
                     .ok_or(LayoutError::SizeOverflow(ty))?;
             }
 
@@ -1084,11 +1025,11 @@ impl<'a, 'tcx> Layout {
                 },
                 abi: Abi::Aggregate {
                     sized,
-                    packed,
-                    align,
-                    primitive_align,
-                    size: min_size.abi_align(align)
-                }
+                    packed
+                },
+                align,
+                primitive_align,
+                size: min_size.abi_align(align)
             })
         };
         let univariant = |fields: &[TyLayout], repr: &ReprOptions, kind| {
@@ -1125,11 +1066,11 @@ impl<'a, 'tcx> Layout {
                 fields,
                 abi: Abi::Aggregate {
                     sized: true,
-                    packed: false,
-                    align,
-                    primitive_align: align,
-                    size: (meta_offset + metadata.size(dl)).abi_align(align)
-                }
+                    packed: false
+                },
+                align,
+                primitive_align: align,
+                size: (meta_offset + metadata.size(dl)).abi_align(align)
             }))
         };
 
@@ -1171,25 +1112,24 @@ impl<'a, 'tcx> Layout {
                 }
 
                 let element = cx.layout_of(element)?;
-                let element_size = element.size(dl);
                 let count = count.val.to_const_int().unwrap().to_u64().unwrap();
-                let size = element_size.checked_mul(count, dl)
+                let size = element.size.checked_mul(count, dl)
                     .ok_or(LayoutError::SizeOverflow(ty))?;
 
                 tcx.intern_layout(CachedLayout {
                     variant_index: None,
                     layout: Layout::Array,
                     fields: FieldPlacement::Array {
-                        stride: element_size,
+                        stride: element.size,
                         count
                     },
                     abi: Abi::Aggregate {
                         sized: true,
-                        packed: false,
-                        align: element.align(dl),
-                        primitive_align: element.primitive_align(dl),
-                        size
-                    }
+                        packed: false
+                    },
+                    align: element.align,
+                    primitive_align: element.primitive_align,
+                    size
                 })
             }
             ty::TySlice(element) => {
@@ -1198,16 +1138,16 @@ impl<'a, 'tcx> Layout {
                     variant_index: None,
                     layout: Layout::Array,
                     fields: FieldPlacement::Array {
-                        stride: element.size(dl),
+                        stride: element.size,
                         count: 0
                     },
                     abi: Abi::Aggregate {
                         sized: false,
-                        packed: false,
-                        align: element.align(dl),
-                        primitive_align: element.primitive_align(dl),
-                        size: Size::from_bytes(0)
-                    }
+                        packed: false
+                    },
+                    align: element.align,
+                    primitive_align: element.primitive_align,
+                    size: Size::from_bytes(0)
                 })
             }
             ty::TyStr => {
@@ -1220,11 +1160,11 @@ impl<'a, 'tcx> Layout {
                     },
                     abi: Abi::Aggregate {
                         sized: false,
-                        packed: false,
-                        align: dl.i8_align,
-                        primitive_align: dl.i8_align,
-                        size: Size::from_bytes(0)
-                    }
+                        packed: false
+                    },
+                    align: dl.i8_align,
+                    primitive_align: dl.i8_align,
+                    size: Size::from_bytes(0)
                 })
             }
 
@@ -1271,23 +1211,34 @@ impl<'a, 'tcx> Layout {
             // SIMD vector types.
             ty::TyAdt(def, ..) if def.repr.simd() => {
                 let count = ty.simd_size(tcx) as u64;
-                let element = ty.simd_type(tcx);
-                let element = match cx.layout_of(element)?.abi {
+                let element = cx.layout_of(ty.simd_type(tcx))?;
+                let element_scalar = match element.abi {
                     Abi::Scalar(value) => value,
                     _ => {
                         tcx.sess.fatal(&format!("monomorphising SIMD type `{}` with \
                                                 a non-machine element type `{}`",
-                                                ty, element));
+                                                ty, element.ty));
                     }
                 };
+                let size = element.size.checked_mul(count, dl)
+                    .ok_or(LayoutError::SizeOverflow(ty))?;
+                let align = dl.vector_align(size);
+                let size = size.abi_align(align);
+
                 tcx.intern_layout(CachedLayout {
                     variant_index: None,
                     layout: Layout::Vector,
                     fields: FieldPlacement::Array {
-                        stride: element.size(tcx),
+                        stride: element.size,
                         count
                     },
-                    abi: Abi::Vector { element, count }
+                    abi: Abi::Vector {
+                        element: element_scalar,
+                        count
+                    },
+                    size,
+                    align,
+                    primitive_align: align
                 })
             }
 
@@ -1332,10 +1283,10 @@ impl<'a, 'tcx> Layout {
                         assert!(!field.is_unsized());
 
                         if !packed {
-                            align = align.max(field.align(dl));
-                            primitive_align = primitive_align.max(field.primitive_align(dl));
+                            align = align.max(field.align);
+                            primitive_align = primitive_align.max(field.primitive_align);
                         }
-                        size = cmp::max(size, field.size(dl));
+                        size = cmp::max(size, field.size);
                     }
 
                     return Ok(tcx.intern_layout(CachedLayout {
@@ -1344,11 +1295,11 @@ impl<'a, 'tcx> Layout {
                         fields: FieldPlacement::Union(variants[0].len()),
                         abi: Abi::Aggregate {
                             sized: true,
-                            packed,
-                            align,
-                            primitive_align,
-                            size: size.abi_align(align)
-                        }
+                            packed
+                        },
+                        align,
+                        primitive_align,
+                        size: size.abi_align(align)
                     }));
                 }
 
@@ -1399,8 +1350,14 @@ impl<'a, 'tcx> Layout {
                                 st[0].variant_index = Some(0);
                                 st[1].variant_index = Some(1);
                                 let offset = st[i].fields.offset(field_index) + offset;
-                                let mut abi = st[i].abi;
-                                if offset.bytes() == 0 && discr.size(dl) == abi.size(dl) {
+                                let CachedLayout {
+                                    mut abi,
+                                    size,
+                                    align,
+                                    primitive_align,
+                                    ..
+                                } = st[i];
+                                if offset.bytes() == 0 && discr.size(dl) == size {
                                     abi = Abi::Scalar(discr);
                                 }
                                 return Ok(tcx.intern_layout(CachedLayout {
@@ -1414,7 +1371,10 @@ impl<'a, 'tcx> Layout {
                                         offsets: vec![offset],
                                         memory_index: vec![0]
                                     },
-                                    abi
+                                    abi,
+                                    size,
+                                    align,
+                                    primitive_align
                                 }));
                             }
                         }
@@ -1447,15 +1407,14 @@ impl<'a, 'tcx> Layout {
                     // Find the first field we can't move later
                     // to make room for a larger discriminant.
                     for field in st.fields.index_by_increasing_offset().map(|j| field_layouts[j]) {
-                        let field_align = field.align(dl);
-                        if !field.is_zst() || field_align.abi() != 1 {
-                            start_align = start_align.min(field_align);
+                        if !field.is_zst() || field.align.abi() != 1 {
+                            start_align = start_align.min(field.align);
                             break;
                         }
                     }
-                    size = cmp::max(size, st.abi.size(dl));
-                    align = align.max(st.abi.align(dl));
-                    primitive_align = primitive_align.max(st.abi.primitive_align(dl));
+                    size = cmp::max(size, st.size);
+                    align = align.max(st.align);
+                    primitive_align = primitive_align.max(st.primitive_align);
                     Ok(st)
                 }).collect::<Result<Vec<_>, _>>()?;
 
@@ -1504,9 +1463,8 @@ impl<'a, 'tcx> Layout {
                     let old_ity_size = min_ity.size();
                     let new_ity_size = ity.size();
                     for variant in &mut variants {
-                        match (&mut variant.fields, &mut variant.abi) {
-                            (&mut FieldPlacement::Arbitrary { ref mut offsets, .. },
-                             &mut Abi::Aggregate { ref mut size, .. }) => {
+                        match variant.fields {
+                            FieldPlacement::Arbitrary { ref mut offsets, .. } => {
                                 for i in offsets {
                                     if *i <= old_ity_size {
                                         assert_eq!(*i, old_ity_size);
@@ -1514,8 +1472,8 @@ impl<'a, 'tcx> Layout {
                                     }
                                 }
                                 // We might be making the struct larger.
-                                if *size <= old_ity_size {
-                                    *size = new_ity_size;
+                                if variant.size <= old_ity_size {
+                                    variant.size = new_ity_size;
                                 }
                             }
                             _ => bug!()
@@ -1539,12 +1497,12 @@ impl<'a, 'tcx> Layout {
                     } else {
                         Abi::Aggregate {
                             sized: true,
-                            packed: false,
-                            align,
-                            primitive_align,
-                            size
+                            packed: false
                         }
-                    }
+                    },
+                    align,
+                    primitive_align,
+                    size
                 })
             }
 
@@ -1596,12 +1554,10 @@ impl<'a, 'tcx> Layout {
         // (delay format until we actually need it)
         let record = |kind, opt_discr_size, variants| {
             let type_desc = format!("{:?}", ty);
-            let overall_size = layout.size(tcx);
-            let align = layout.align(tcx);
             tcx.sess.code_stats.borrow_mut().record_type_size(kind,
                                                               type_desc,
-                                                              align,
-                                                              overall_size,
+                                                              layout.align,
+                                                              layout.size,
                                                               opt_discr_size,
                                                               variants);
         };
@@ -1637,16 +1593,15 @@ impl<'a, 'tcx> Layout {
                     }
                     Ok(field_layout) => {
                         let offset = layout.fields.offset(i);
-                        let field_size = field_layout.size(tcx);
-                        let field_end = offset + field_size;
+                        let field_end = offset + field_layout.size;
                         if min_size < field_end {
                             min_size = field_end;
                         }
                         session::FieldInfo {
                             name: name.to_string(),
                             offset: offset.bytes(),
-                            size: field_size.bytes(),
-                            align: field_layout.align(tcx).abi(),
+                            size: field_layout.size.bytes(),
+                            align: field_layout.align.abi(),
                         }
                     }
                 }
@@ -1659,9 +1614,9 @@ impl<'a, 'tcx> Layout {
                 } else {
                     session::SizeKind::Exact
                 },
-                align: layout.align(tcx).abi(),
+                align: layout.align.abi(),
                 size: if min_size.bytes() == 0 {
-                    layout.size(tcx).bytes()
+                    layout.size.bytes()
                 } else {
                     min_size.bytes()
                 },
@@ -1762,7 +1717,7 @@ impl<'a, 'tcx> SizeSkeleton<'tcx> {
         // First try computing a static layout.
         let err = match (tcx, param_env).layout_of(ty) {
             Ok(layout) => {
-                return Ok(SizeSkeleton::Known(layout.size(tcx)));
+                return Ok(SizeSkeleton::Known(layout.size));
             }
             Err(err) => err
         };
@@ -2135,24 +2090,15 @@ impl<'a, 'tcx> TyLayout<'tcx> {
 
     /// Returns true if the type is a ZST and not unsized.
     pub fn is_zst(&self) -> bool {
-        self.abi.is_zst()
+        match self.abi {
+            Abi::Scalar(_) => false,
+            Abi::Vector { count, .. } => count == 0,
+            Abi::Aggregate { sized, .. } => sized && self.size.bytes() == 0
+        }
     }
 
-    pub fn size<C: HasDataLayout>(&self, cx: C) -> Size {
-        self.abi.size(cx)
-    }
-
-    pub fn align<C: HasDataLayout>(&self, cx: C) -> Align {
-        self.abi.align(cx)
-    }
-
-    pub fn size_and_align<C: HasDataLayout>(&self, cx: C) -> (Size, Align) {
-        self.abi.size_and_align(cx)
-    }
-
-    /// Returns alignment before repr alignment is applied
-    pub fn primitive_align<C: HasDataLayout>(&self, cx: C) -> Align {
-        self.abi.primitive_align(cx)
+    pub fn size_and_align(&self) -> (Size, Align) {
+        (self.size, self.align)
     }
 
     /// Find the offset of a non-zero leaf field, starting from
@@ -2292,12 +2238,9 @@ impl<'gcx> HashStable<StableHashingContext<'gcx>> for Abi {
                 element.hash_stable(hcx, hasher);
                 count.hash_stable(hcx, hasher);
             }
-            Aggregate { packed, sized, size, align, primitive_align } => {
+            Aggregate { packed, sized } => {
                 packed.hash_stable(hcx, hasher);
                 sized.hash_stable(hcx, hasher);
-                size.hash_stable(hcx, hasher);
-                align.hash_stable(hcx, hasher);
-                primitive_align.hash_stable(hcx, hasher);
             }
         }
     }
@@ -2307,7 +2250,10 @@ impl_stable_hash_for!(struct ::ty::layout::CachedLayout {
     variant_index,
     layout,
     fields,
-    abi
+    abi,
+    size,
+    align,
+    primitive_align
 });
 
 impl_stable_hash_for!(enum ::ty::layout::Integer {

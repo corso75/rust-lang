@@ -292,14 +292,14 @@ impl<'tcx> LayoutExt<'tcx> for TyLayout<'tcx> {
                 };
                 Some(Reg {
                     kind,
-                    size: self.size(ccx)
+                    size: self.size
                 })
             }
 
             layout::Abi::Vector { .. } => {
                 Some(Reg {
                     kind: RegKind::Vector,
-                    size: self.size(ccx)
+                    size: self.size
                 })
             }
 
@@ -341,7 +341,7 @@ impl<'tcx> LayoutExt<'tcx> for TyLayout<'tcx> {
                     }
 
                     // Keep track of the offset (without padding).
-                    let size = field.size(ccx);
+                    let size = field.size;
                     if is_union {
                         total = cmp::max(total, size);
                     } else {
@@ -350,7 +350,7 @@ impl<'tcx> LayoutExt<'tcx> for TyLayout<'tcx> {
                 }
 
                 // There needs to be no padding.
-                if total != self.size(ccx) {
+                if total != self.size {
                     None
                 } else {
                     result
@@ -442,7 +442,7 @@ impl<'a, 'tcx> ArgType<'tcx> {
         }
     }
 
-    pub fn make_indirect(&mut self, ccx: &CrateContext<'a, 'tcx>) {
+    pub fn make_indirect(&mut self) {
         assert!(self.nested.is_empty());
         assert_eq!(self.kind, ArgKind::Direct);
 
@@ -454,7 +454,7 @@ impl<'a, 'tcx> ArgType<'tcx> {
         // program-invisible so can't possibly capture
         self.attrs.set(ArgAttribute::NoAlias)
                   .set(ArgAttribute::NoCapture)
-                  .set_dereferenceable(self.layout.size(ccx));
+                  .set_dereferenceable(self.layout.size);
 
         self.kind = ArgKind::Indirect;
     }
@@ -516,15 +516,15 @@ impl<'a, 'tcx> ArgType<'tcx> {
         }
         let ccx = bcx.ccx;
         if self.is_indirect() {
-            let llsz = C_usize(ccx, self.layout.size(ccx).bytes());
-            base::call_memcpy(bcx, dst.llval, val, llsz, self.layout.align(ccx));
+            let llsz = C_usize(ccx, self.layout.size.bytes());
+            base::call_memcpy(bcx, dst.llval, val, llsz, self.layout.align);
         } else if let Some(ty) = self.cast {
             // FIXME(eddyb): Figure out when the simpler Store is safe, clang
             // uses it for i16 -> {i8, i8}, but not for i24 -> {i8, i8, i8}.
             let can_store_through_cast_ptr = false;
             if can_store_through_cast_ptr {
                 let cast_dst = bcx.pointercast(dst.llval, ty.llvm_type(ccx).ptr_to());
-                bcx.store(val, cast_dst, Some(self.layout.align(ccx)));
+                bcx.store(val, cast_dst, Some(self.layout.align));
             } else {
                 // The actual return type is a struct, but the ABI
                 // adaptation code has cast it into some scalar type.  The
@@ -552,8 +552,8 @@ impl<'a, 'tcx> ArgType<'tcx> {
                 base::call_memcpy(bcx,
                                   bcx.pointercast(dst.llval, Type::i8p(ccx)),
                                   bcx.pointercast(llscratch, Type::i8p(ccx)),
-                                  C_usize(ccx, self.layout.size(ccx).bytes()),
-                                  self.layout.align(ccx).min(ty.align(ccx)));
+                                  C_usize(ccx, self.layout.size.bytes()),
+                                  self.layout.align.min(ty.align(ccx)));
 
                 bcx.lifetime_end(llscratch, scratch_size);
             }
@@ -824,7 +824,7 @@ impl<'a, 'tcx> FnType<'tcx> {
                     _ => return
                 }
 
-                let size = arg.layout.size(ccx);
+                let size = arg.layout.size;
 
                 if let Some(unit) = arg.layout.homogeneous_aggregate(ccx) {
                     // Replace newtypes with their inner-most type.
@@ -847,7 +847,7 @@ impl<'a, 'tcx> FnType<'tcx> {
                 }
 
                 if size > layout::Pointer.size(ccx) {
-                    arg.make_indirect(ccx);
+                    arg.make_indirect();
                 } else {
                     // We want to pass small aggregates as immediates, but using
                     // a LLVM aggregate type for this leads to bad optimizations,
@@ -893,7 +893,7 @@ impl<'a, 'tcx> FnType<'tcx> {
             "x86_64" => if abi == Abi::SysV64 {
                 cabi_x86_64::compute_abi_info(ccx, self);
             } else if abi == Abi::Win64 || ccx.sess().target.target.options.is_like_windows {
-                cabi_x86_win64::compute_abi_info(ccx, self);
+                cabi_x86_win64::compute_abi_info(self);
             } else {
                 cabi_x86_64::compute_abi_info(ccx, self);
             },
@@ -906,12 +906,12 @@ impl<'a, 'tcx> FnType<'tcx> {
             "s390x" => cabi_s390x::compute_abi_info(ccx, self),
             "asmjs" => cabi_asmjs::compute_abi_info(ccx, self),
             "wasm32" => cabi_asmjs::compute_abi_info(ccx, self),
-            "msp430" => cabi_msp430::compute_abi_info(ccx, self),
+            "msp430" => cabi_msp430::compute_abi_info(self),
             "sparc" => cabi_sparc::compute_abi_info(ccx, self),
             "sparc64" => cabi_sparc64::compute_abi_info(ccx, self),
-            "nvptx" => cabi_nvptx::compute_abi_info(ccx, self),
-            "nvptx64" => cabi_nvptx64::compute_abi_info(ccx, self),
-            "hexagon" => cabi_hexagon::compute_abi_info(ccx, self),
+            "nvptx" => cabi_nvptx::compute_abi_info(self),
+            "nvptx64" => cabi_nvptx64::compute_abi_info(self),
+            "hexagon" => cabi_hexagon::compute_abi_info(self),
             a => ccx.sess().fatal(&format!("unrecognized arch \"{}\" in target specification", a))
         }
 
