@@ -275,7 +275,7 @@ impl<'tcx> LayoutExt<'tcx> for TyLayout<'tcx> {
     fn is_aggregate(&self) -> bool {
         match self.abi {
             layout::Abi::Scalar(_) |
-            layout::Abi::Vector { .. } => false,
+            layout::Abi::Vector => false,
             layout::Abi::Aggregate { .. } => true
         }
     }
@@ -296,7 +296,7 @@ impl<'tcx> LayoutExt<'tcx> for TyLayout<'tcx> {
                 })
             }
 
-            layout::Abi::Vector { .. } => {
+            layout::Abi::Vector => {
                 Some(Reg {
                     kind: RegKind::Vector,
                     size: self.size

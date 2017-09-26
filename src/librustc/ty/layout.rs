@@ -734,10 +734,7 @@ impl FieldPlacement {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Abi {
     Scalar(Primitive),
-    Vector {
-        element: Primitive,
-        count: u64
-    },
+    Vector,
     Aggregate {
         /// If true, the size is exact, otherwise it's only a lower bound.
         sized: bool,
@@ -749,7 +746,7 @@ impl Abi {
     /// Returns true if the layout corresponds to an unsized type.
     pub fn is_unsized(&self) -> bool {
         match *self {
-            Abi::Scalar(_) | Abi::Vector { .. } => false,
+            Abi::Scalar(_) | Abi::Vector => false,
             Abi::Aggregate { sized, .. } => !sized
         }
     }
@@ -757,7 +754,7 @@ impl Abi {
     /// Returns true if the fields of the layout are packed.
     pub fn is_packed(&self) -> bool {
         match *self {
-            Abi::Scalar(_) | Abi::Vector { .. } => false,
+            Abi::Scalar(_) | Abi::Vector => false,
             Abi::Aggregate { packed, .. } => packed
         }
     }
@@ -1190,14 +1187,14 @@ impl<'a, 'tcx> CachedLayout {
             ty::TyAdt(def, ..) if def.repr.simd() => {
                 let count = ty.simd_size(tcx) as u64;
                 let element = cx.layout_of(ty.simd_type(tcx))?;
-                let element_scalar = match element.abi {
-                    Abi::Scalar(value) => value,
+                match element.abi {
+                    Abi::Scalar(_) => {}
                     _ => {
                         tcx.sess.fatal(&format!("monomorphising SIMD type `{}` with \
                                                 a non-machine element type `{}`",
                                                 ty, element.ty));
                     }
-                };
+                }
                 let size = element.size.checked_mul(count, dl)
                     .ok_or(LayoutError::SizeOverflow(ty))?;
                 let align = dl.vector_align(size);
@@ -1209,10 +1206,7 @@ impl<'a, 'tcx> CachedLayout {
                         stride: element.size,
                         count
                     },
-                    abi: Abi::Vector {
-                        element: element_scalar,
-                        count
-                    },
+                    abi: Abi::Vector,
                     size,
                     align,
                     primitive_align: align
@@ -2045,7 +2039,7 @@ impl<'a, 'tcx> TyLayout<'tcx> {
     pub fn is_zst(&self) -> bool {
         match self.abi {
             Abi::Scalar(_) => false,
-            Abi::Vector { count, .. } => count == 0,
+            Abi::Vector => self.size.bytes() == 0,
             Abi::Aggregate { sized, .. } => sized && self.size.bytes() == 0
         }
     }
@@ -2202,10 +2196,7 @@ impl<'gcx> HashStable<StableHashingContext<'gcx>> for Abi {
             Scalar(ref value) => {
                 value.hash_stable(hcx, hasher);
             }
-            Vector { ref element, count } => {
-                element.hash_stable(hcx, hasher);
-                count.hash_stable(hcx, hasher);
-            }
+            Vector => {}
             Aggregate { packed, sized } => {
                 packed.hash_stable(hcx, hasher);
                 sized.hash_stable(hcx, hasher);
