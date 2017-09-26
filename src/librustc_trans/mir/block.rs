@@ -662,9 +662,11 @@ impl<'a, 'tcx> MirContext<'a, 'tcx> {
                                     .non_abi());
             } else {
                 llval = bcx.load(llval, align.non_abi());
-            }
-            if let layout::Abi::Scalar(layout::Int(layout::I1, _)) = arg.layout.abi {
-                bcx.range_metadata(llval, 0..2);
+                if let layout::Abi::Scalar(ref scalar) = arg.layout.abi {
+                    if scalar.is_bool() {
+                        bcx.range_metadata(llval, 0..2);
+                    }
+                }
                 // We store bools as i8 so we need to truncate to i1.
                 llval = base::to_immediate(bcx, llval, arg.layout);
             }
