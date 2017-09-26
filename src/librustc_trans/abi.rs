@@ -274,6 +274,7 @@ pub trait LayoutExt<'tcx> {
 impl<'tcx> LayoutExt<'tcx> for TyLayout<'tcx> {
     fn is_aggregate(&self) -> bool {
         match self.abi {
+            layout::Abi::Uninhabited |
             layout::Abi::Scalar(_) |
             layout::Abi::Vector => false,
             layout::Abi::Aggregate { .. } => true
@@ -282,6 +283,8 @@ impl<'tcx> LayoutExt<'tcx> for TyLayout<'tcx> {
 
     fn homogeneous_aggregate<'a>(&self, ccx: &CrateContext<'a, 'tcx>) -> Option<Reg> {
         match self.abi {
+            layout::Abi::Uninhabited => None,
+
             // The primitive for this algorithm.
             layout::Abi::Scalar(ref scalar) => {
                 let kind = match scalar.value {
