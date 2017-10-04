@@ -17,7 +17,7 @@ use llvm::{Float, Double, X86_FP80, PPC_FP128, FP128};
 use context::CrateContext;
 
 use syntax::ast;
-use rustc::ty::layout;
+use rustc::ty::layout::{self, Align, HasDataLayout, Size};
 
 use std::ffi::CString;
 use std::fmt;
@@ -273,6 +273,16 @@ impl Type {
             I32 => Type::i32(cx),
             I64 => Type::i64(cx),
             I128 => Type::i128(cx),
+        }
+    }
+
+    pub fn for_abi_align(ccx: &CrateContext, align: Align) -> Type {
+        if let Some(ity) = layout::Integer::for_abi_align(ccx, align) {
+            Type::from_integer(ccx, ity)
+        } else {
+            let vec_align = ccx.data_layout().vector_align(Size::from_bytes(align.abi()));
+            assert_eq!(vec_align.abi(), align.abi());
+            Type::vector(&Type::i32(ccx), align.abi() / 4)
         }
     }
 }
