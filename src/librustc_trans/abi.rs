@@ -307,6 +307,7 @@ impl<'tcx> LayoutExt<'tcx> for TyLayout<'tcx> {
             layout::Abi::Uninhabited |
             layout::Abi::Scalar(_) |
             layout::Abi::Vector => false,
+            layout::Abi::ScalarPair(..) |
             layout::Abi::Aggregate { .. } => true
         }
     }
@@ -336,6 +337,7 @@ impl<'tcx> LayoutExt<'tcx> for TyLayout<'tcx> {
                 })
             }
 
+            layout::Abi::ScalarPair(..) |
             layout::Abi::Aggregate { .. } => {
                 let mut total = Size::from_bytes(0);
                 let mut result = None;
@@ -741,10 +743,13 @@ impl<'a, 'tcx> FnType<'tcx> {
                         arg.attrs.set(ArgAttribute::NonNull);
                     }
                 }
-                _ => {}
+                _ => {
+                    // Nothing to do for non-pointer types.
+                    return;
+                }
             }
 
-            if let Some(pointee) = arg.layout.llvm_pointee(ccx) {
+            if let Some(pointee) = arg.layout.llvm_pointee(ccx, Size::from_bytes(0)) {
                 if let Some(kind) = pointee.safe {
                     arg.attrs.pointee_size = pointee.size;
                     arg.attrs.pointee_align = Some(pointee.align);
