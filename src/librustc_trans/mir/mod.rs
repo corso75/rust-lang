@@ -22,7 +22,7 @@ use builder::Builder;
 use common::{CrateContext, Funclet};
 use debuginfo::{self, declare_local, VariableAccess, VariableKind, FunctionDebugContext};
 use monomorphize::Instance;
-use abi::FnType;
+use abi::{FnType, PassMode};
 
 use syntax_pos::{DUMMY_SP, NO_EXPANSION, BytePos, Span};
 use syntax::symbol::keywords;
@@ -421,52 +421,49 @@ fn arg_local_refs<'a, 'tcx>(bcx: &Builder<'a, 'tcx>,
 
         let arg = &mircx.fn_ty.args[idx];
         idx += 1;
-        let lvalue = if arg.is_indirect() && bcx.sess().opts.debuginfo != FullDebugInfo {
+        if arg.pad.is_some() {
+            llarg_idx += 1;
+        }
+
+        if arg_scope.is_none() && !lvalue_locals.contains(local.index()) {
+            // We don't have to cast or keep the argument in the alloca.
+            // FIXME(eddyb): We should figure out how to use llvm.dbg.value instead
+            // of putting everything in allocas just so we can use llvm.dbg.declare.
+            let local = |op| LocalRef::Operand(Some(op));
+            match arg.mode {
+                PassMode::Ignore => {
+                    return local(OperandRef::new_zst(bcx.ccx, arg.layout));
+                }
+                PassMode::Direct(_) => {
+                    let llarg = llvm::get_param(bcx.llfn(), llarg_idx as c_uint);
+                    llarg_idx += 1;
+                    return local(
+                        OperandRef::from_immediate_or_packed_pair(bcx, llarg, arg.layout));
+                }
+                PassMode::Pair(..) => {
+                    let a = llvm::get_param(bcx.llfn(), llarg_idx as c_uint);
+                    llarg_idx += 1;
+
+                    let b = llvm::get_param(bcx.llfn(), llarg_idx as c_uint);
+                    llarg_idx += 1;
+
+                    return local(OperandRef {
+                        val: OperandValue::Pair(a, b),
+                        layout: arg.layout
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        let lvalue = if arg.is_indirect() && arg_scope.is_none() {
             // Don't copy an indirect argument to an alloca, the caller
             // already put it in a temporary alloca and gave it up, unless
             // we emit extra-debug-info, which requires local allocas :(.
             // FIXME: lifetimes
-            if arg.pad.is_some() {
-                llarg_idx += 1;
-            }
             let llarg = llvm::get_param(bcx.llfn(), llarg_idx as c_uint);
             llarg_idx += 1;
             LvalueRef::new_sized(llarg, arg.layout, Alignment::AbiAligned)
-        } else if !lvalue_locals.contains(local.index()) &&
-                  !arg.nested.is_empty() {
-            assert_eq!(arg.nested.len(), 2);
-            let (a, b) = (&arg.nested[0], &arg.nested[1]);
-            assert!(!a.is_ignore() && a.cast.is_none() && a.pad.is_none());
-            assert!(!b.is_ignore() && b.cast.is_none() && b.pad.is_none());
-
-            let a = llvm::get_param(bcx.llfn(), llarg_idx as c_uint);
-            llarg_idx += 1;
-
-            let b = llvm::get_param(bcx.llfn(), llarg_idx as c_uint);
-            llarg_idx += 1;
-
-            return LocalRef::Operand(Some(OperandRef {
-                val: OperandValue::Pair(a, b),
-                layout: arg.layout
-            }));
-        } else if !lvalue_locals.contains(local.index()) &&
-                  !arg.is_indirect() && arg.cast.is_none() &&
-                  arg_scope.is_none() {
-            if arg.is_ignore() {
-                return LocalRef::new_operand(bcx.ccx, arg.layout);
-            }
-
-            // We don't have to cast or keep the argument in the alloca.
-            // FIXME(eddyb): We should figure out how to use llvm.dbg.value instead
-            // of putting everything in allocas just so we can use llvm.dbg.declare.
-            if arg.pad.is_some() {
-                llarg_idx += 1;
-            }
-            let llarg = llvm::get_param(bcx.llfn(), llarg_idx as c_uint);
-            llarg_idx += 1;
-            return LocalRef::Operand(Some(
-                OperandRef::from_immediate_or_packed_pair(bcx, llarg, arg.layout)
-            ));
         } else {
             let tmp = LvalueRef::alloca(bcx, arg.layout, &format!("arg{}", arg_index));
             arg.store_fn_arg(bcx, &mut llarg_idx, tmp);
