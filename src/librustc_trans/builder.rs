@@ -544,6 +544,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
 
     pub fn range_metadata(&self, load: ValueRef, range: Range<u128>) {
+        if !self.ccx.use_range_or_nonnull_metadata() {
+            return;
+        }
         unsafe {
             let llty = val_ty(load);
             let v = [
@@ -559,6 +562,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     }
 
     pub fn nonnull_metadata(&self, load: ValueRef) {
+        if !self.ccx.use_range_or_nonnull_metadata() {
+            return;
+        }
         unsafe {
             llvm::LLVMSetMetadata(load, llvm::MD_nonnull as c_uint,
                                   llvm::LLVMMDNodeInContext(self.ccx.llcx(), ptr::null(), 0));

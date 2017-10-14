@@ -53,6 +53,10 @@ pub struct SharedCrateContext<'a, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     check_overflow: bool,
     use_dll_storage_attrs: bool,
+
+    // HACK(eddyb) remove this after we make the required LLVM version 3.9
+    // or later. See issue #36023 and PR #45225 for more details on the bug.
+    use_range_or_nonnull_metadata: bool,
 }
 
 /// The local portion of a `CrateContext`.  There is one `LocalCrateContext`
@@ -284,10 +288,16 @@ impl<'b, 'tcx> SharedCrateContext<'b, 'tcx> {
 
         let check_overflow = tcx.sess.overflow_checks();
 
+        // See the comment on the `use_range_or_nonnull_metadata` field.
+        let use_range_or_nonnull_metadata = unsafe {
+            (llvm::LLVMRustVersionMajor(), llvm::LLVMRustVersionMinor()) >= (3, 9)
+        };
+
         SharedCrateContext {
             tcx,
             check_overflow,
             use_dll_storage_attrs,
+            use_range_or_nonnull_metadata,
         }
     }
 
@@ -522,6 +532,10 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
 
     pub fn use_dll_storage_attrs(&self) -> bool {
         self.shared.use_dll_storage_attrs()
+    }
+
+    pub fn use_range_or_nonnull_metadata(&self) -> bool {
+        self.shared.use_range_or_nonnull_metadata
     }
 
     /// Generate a new symbol name with the given prefix. This symbol name must

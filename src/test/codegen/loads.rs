@@ -9,6 +9,7 @@
 // except according to those terms.
 
 // compile-flags: -C no-prepopulate-passes
+// min-llvm-version 3.9
 
 #![crate_type = "lib"]
 
