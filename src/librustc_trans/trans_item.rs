@@ -23,18 +23,19 @@ use common;
 use declare;
 use llvm;
 use monomorphize::Instance;
+use type_of::LayoutLlvmExt;
 use rustc::hir;
 use rustc::hir::def_id::DefId;
 use rustc::middle::trans::{Linkage, Visibility};
 use rustc::session::config::OptLevel;
 use rustc::traits;
 use rustc::ty::{self, Ty, TyCtxt, TypeFoldable};
+use rustc::ty::layout::LayoutOf;
 use rustc::ty::subst::{Subst, Substs};
 use syntax::ast;
 use syntax::attr;
 use syntax_pos::Span;
 use syntax_pos::symbol::Symbol;
-use type_of;
 use std::fmt::{self, Write};
 use std::iter;
 
@@ -328,7 +329,7 @@ fn predefine_static<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
     let def_id = ccx.tcx().hir.local_def_id(node_id);
     let instance = Instance::mono(ccx.tcx(), def_id);
     let ty = common::instance_ty(ccx.tcx(), &instance);
-    let llty = type_of::type_of(ccx, ty);
+    let llty = ccx.layout_of(ty).llvm_type(ccx);
 
     let g = declare::define_global(ccx, symbol_name, llty).unwrap_or_else(|| {
         ccx.sess().span_fatal(ccx.tcx().hir.span(node_id),
